@@ -2,8 +2,13 @@
 from __future__ import division
 
 import itertools
+from shutil import copyfile, SameFileError
+
+import json
 import os
 import threading
+import urllib.request
+import zipfile
 
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import wait
@@ -438,16 +443,95 @@ class Executor(object):
             archive = self._download(operation)
 
         operation_message = self.get_operation_message(operation)
-        message = "  <fg=blue;options=bold>•</> {message}: <info>Installing...</info>".format(
-            message=operation_message,
-        )
+
+        if isinstance(archive, Link):
+            archive_uri = archive.url
+        elif type(archive) == 'PosixPath':
+            archive_uri = 'file://{}'.format(str(archive))
+        else:
+            archive_uri = 'file://{}'.format(str(archive))
+
+        meta_json_file, paths_json_file = self.conda_pkg(archive_uri)
+        isConda = meta_json_file is not None
+
+        if isConda:
+            message = "  <fg=blue;options=bold>•</> {message}: <info>Anaconda-Installing...</info>".format(
+                message=operation_message,
+            )
+        else:
+            message = "  <fg=blue;options=bold>•</> {message}: <info>Installing...</info>".format(
+                message=operation_message,
+            )
         self._write(operation, message)
+        if isConda:
+            return self.run_conda(meta_json_file, paths_json_file, self.conda_install_file)
+        else:
+            args = ["install", "--no-deps", str(archive)]
+            if operation.job_type == "update":
+                args.insert(2, "-U")
 
-        args = ["install", "--no-deps", str(archive)]
-        if operation.job_type == "update":
-            args.insert(2, "-U")
+            return self.run_pip(*args)
 
-        return self.run_pip(*args)
+    def run_conda(self, meta_json_file, paths_json_file, operation):
+
+        meta_json = json.load(meta_json_file)
+        paths_json = json.load(paths_json_file)
+
+        conda_base_path = Path(meta_json['extracted_package_dir'])
+        venv_base_path = Path(self._env.path)
+        # Todo eliminate dependency on hardcoded python version
+        venv_site_packages_path = venv_base_path / 'lib/python3.9/site-packages'
+        for path_info in paths_json['paths']:
+            source_path_rel = path_info['_path']
+            if source_path_rel.startswith('site-packages'):
+                target_path = venv_site_packages_path / source_path_rel
+            else:
+                target_path = venv_base_path / source_path_rel
+
+            if not target_path.parent.exists():
+                target_path.parent.mkdir(parents=True)
+
+            source_path = conda_base_path / source_path_rel
+
+            operation(source_path, target_path, path_info)
+
+        return 0
+
+    def conda_install_file(self, source_path, target_path, path_info):
+        if path_info['path_type'] == 'hardlink':
+            try:
+                os.link(source_path, target_path)
+            except FileExistsError:
+                pass
+            except SameFileError:
+                pass
+        else:
+            try:
+                copyfile(source_path, target_path, follow_symlinks=False)
+            except FileExistsError:
+                pass
+            except SameFileError:
+                pass
+
+    def conda_uninstall_file(self, _source_path, target_path, _path_info):
+            try:
+                os.remove(target_path)
+            except FileExistsError:
+                pass
+            except SameFileError:
+                pass
+
+    def conda_pkg(self, archive_uri):
+        remote_file = urllib.request.urlopen(archive_uri)
+        with zipfile.ZipFile(remote_file) as wheel:
+            try:
+                paths_json_file = wheel.open('paths.json')
+                meta_json_file = wheel.open('meta.json')
+            except ValueError:
+                return None, None
+
+        return meta_json_file, paths_json_file
+
 
     def _update(self, operation):
         return self._install(operation)
@@ -460,6 +544,26 @@ class Executor(object):
             src_dir = self._env.path / "src" / package.name
             if src_dir.exists():
                 safe_rmtree(str(src_dir))
+
+        if package.source_type == "file":
+            archive = self._prepare_file(operation)
+        elif package.source_type == "url":
+            archive = self._download_link(operation, Link(package.source_url))
+        else:
+            archive = self._download(operation)
+
+        if isinstance(archive, Link):
+            archive_uri = archive.url
+        elif type(archive) == 'PosixPath':
+            archive_uri = 'file://{}'.format(str(archive))
+        else:
+            archive_uri = 'file://{}'.format(str(archive))
+
+        meta_json_file, paths_json_file = self.conda_pkg(archive_uri)
+        isConda = meta_json_file is not None
+        import pdb; pdb.set_trace()
+        if isConda:
+            return self.run_conda(meta_json_file, paths_json_file, self.conda_uninstall_file)
 
         try:
             return self.run_pip("uninstall", package.name, "-y")
