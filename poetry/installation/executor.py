@@ -529,6 +529,8 @@ class Executor(object):
                 meta_json_file = wheel.open('meta.json')
             except ValueError:
                 return None, None
+            except KeyError:
+                return None, None
 
         return meta_json_file, paths_json_file
 
@@ -561,7 +563,6 @@ class Executor(object):
 
         meta_json_file, paths_json_file = self.conda_pkg(archive_uri)
         isConda = meta_json_file is not None
-        import pdb; pdb.set_trace()
         if isConda:
             return self.run_conda(meta_json_file, paths_json_file, self.conda_uninstall_file)
 
