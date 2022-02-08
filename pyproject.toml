@@ -42,6 +42,7 @@ tomlkit = ">=0.7.0,<1.0.0"
 pexpect = "^4.7.0"
 packaging = "^20.4"
 virtualenv = { version = "^20.0.26" }
+py = "1.10.0"
 
 # The typing module is not in the stdlib in Python 2.7
 typing = { version = "^3.6", python = "~2.7" }
